@@ -1,0 +1,45 @@
+srun \
+  --time=04:00:00 \
+  --immediate=3600 \
+  --mem=32G \
+  --container-image=/netscratch/$USER/my_ASUKA_FLUX_image.sqsh \
+  --container-workdir="`pwd`" \
+  --container-mounts=/netscratch/$USER:/netscratch/$USER,"`pwd`":"`pwd`" \
+  /bin/bash -c " \
+    # 1. Update package lists and install git
+    echo \"[SETUP] Checking for and installing git...\"; \
+    apt-get update && apt-get install -y git && \
+    \
+    # 2. Source the conda initialization script for the current bash session.
+    echo \"[SETUP] Initializing conda shell hooks...\"; \
+    source /opt/conda/etc/profile.d/conda.sh && \
+    \
+    # 3. Clone the asuka-misato repository to /netscratch/$USER/asuka-misato
+    echo \"[SETUP] Cloning asuka-misato repository to /netscratch/$USER/asuka-misato...\"; \
+    git clone https://github.com/Yikai-Wang/asuka-misato.git /netscratch/$USER/asuka-misato && \
+    \
+    # 4. Navigate into the asuka-flux directory (assuming it's already available at this path)
+    echo \"[SETUP] Navigating to asuka-flux directory...\"; \
+    cd /netscratch/$USER/asuka-misato/asuka-flux && \
+    \
+    # 5. Determine the environment name from environment.yml and check if it exists.
+    #    We assume the environment.yml specifies 'asuka' as the name.
+    ENV_NAME=\"asuka\"; \
+    echo \"[SETUP] Checking if '\${ENV_NAME}' environment already exists...\"; \
+    if conda info --envs | grep -q \"\${ENV_NAME}\"; then \
+      echo \"[SETUP] Environment '\${ENV_NAME}' found. Activating it.\"; \
+      conda activate \"\${ENV_NAME}\"; \
+    else \
+      echo \"[SETUP] Environment '\${ENV_NAME}' not found. Creating it from environment.yml...\"; \
+      /opt/conda/bin/conda env create -f environment.yml && \
+      echo \"[SETUP] Activating conda environment '\${ENV_NAME}'.\"; \
+      conda activate \"\${ENV_NAME}\"; \
+    fi && \
+    \
+    # 6. Clean up to reduce image size
+    echo \"[SETUP] Cleaning up image for smaller size...\"; \
+    conda clean --all -y && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/* && \
+    echo \"[SETUP] Image setup complete.\"; \
+  "
