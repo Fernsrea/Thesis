@@ -1,0 +1,40 @@
+srun \
+  --time=04:00:00 \
+  --immediate=3600 \
+  --mem=128G \
+  --container-image=/enroot/huggingface_text-generation-inference_1.1.0.sqsh \
+  --container-save=/netscratch/$USER/my_attentive_eraser_image.sqsh \
+  --container-workdir="`pwd`" \
+  --container-mounts=/netscratch/$USER:/netscratch/$USER,"`pwd`":"`pwd`" \
+  /bin/bash -c " \
+    # 1. Update package lists and install git
+    echo \"[SETUP] Checking for and installing git...\"; \
+    apt-get update && apt-get install -y git && \
+    \
+    # 2. Source the conda initialization script for the current bash session.
+    echo \"[SETUP] Initializing conda shell hooks...\"; \
+    source /opt/conda/etc/profile.d/conda.sh && \
+    \
+    # 3. Create the AE conda environment
+    echo \"[SETUP] Creating conda environment 'AE'...\"; \
+    /opt/conda/bin/conda create -n AE python=3.9 -y && \
+    \
+    # 4. Activate the AE environment (necessary for subsequent pip installs)
+    echo \"[SETUP] Activating conda environment 'AE'...\"; \
+    conda activate AE && \
+    \
+    # 5. Install Python requirements from your project
+    echo \"[SETUP] Installing requirements from requirements.txt...\"; \
+    pip install -r requirements.txt && \
+    \
+    # 6. Install hf_transfer
+    echo \"[SETUP] Installing hf_transfer...\"; \
+    pip install hf_transfer && \
+    \
+    # 7. Optional: Clean up to reduce image size (highly recommended!)
+    echo \"[SETUP] Cleaning up image for smaller size...\"; \
+    conda clean --all -y && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/* && \
+    echo \"[SETUP] Image setup complete.\"; \
+  "
