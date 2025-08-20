@@ -2,22 +2,25 @@ from typing import Optional
 import torch, torch.nn as nn, torch.nn.functional as F
 import pytorch_lightning as pl
 
-# NOTE: Replace these with the actual imports from your LightningDiT install.
-# e.g., from lightningdit.models.dit import DiT
-#       from lightningdit.modules.vae import VAE
-class DummyVAE(nn.Module):
-    def __init__(self, c=4, scale=8):  # latent channels & downscale factor
+class VAELightning(nn.Module):
+    def __init__(self, ckpt_path: str, device="cuda"):
         super().__init__()
-        self.c, self.scale = c, scale
-        # placeholders - replace with actual VAE
-        self.enc = nn.Conv2d(3, c, 3, 1, 1)
-        self.dec = nn.Conv2d(c, 3, 3, 1, 1)
+        # load checkpoint
+        ckpt = torch.load("vavae-imagenet256-f16d32-dinov2.pt", map_location="cpu")
+        
+        # build model with same config (f=16, d=32, img_size=256)
+        vae = ViTVAE(img_size=256, latent_dim=32, patch_size=16)
+        
+        # load weights
+        vae.load_state_dict(ckpt["state_dict"], strict=True)
+        vae.eval()
 
-    def encode(self, x):  # x: Bx3xHxW
-        return F.interpolate(self.enc((x+1)/2.0), scale_factor=1.0/self.scale, mode="bilinear", align_corners=False)
-    def decode(self, z):
-        y = self.dec(z)
-        return torch.clamp(y*2-1, -1, 1)
+    def encode(self, x: torch.Tensor) -> torch.Tensor:
+        # x ∈ [-1,1], shape [B,3,256,256]
+        return self.model.encode(x)
+
+    def decode(self, z: torch.Tensor) -> torch.Tensor:
+        return self.model.decode(z)
 
 class DummyDiT(nn.Module):
     def __init__(self, in_ch, model_dim=768):
@@ -48,7 +51,7 @@ class InpaintLightningModule(pl.LightningModule):
         self.save_hyperparameters()
 
         # replace these with actual VAE/DiT from LightningDiT in your env
-        self.vae = DummyVAE(c=latent_channels, scale=vae_scale)
+        self.vae = VAELightning("vavae-imagenet256-f16d32-dinov2.pt", device=self.device)
         # conditioning: [z_masked(C) + mask(1)] => (C+1)
         self.cond_adapter = nn.Conv2d(latent_channels + 1, model_dim, 1)
         self.dit = DummyDiT(in_ch=latent_channels + 1, model_dim=model_dim)  # in_ch for zt plus (we reuse channels)
@@ -63,32 +66,34 @@ class InpaintLightningModule(pl.LightningModule):
         ac = self.alphas_cumprod[t].view(-1, 1, 1, 1)
         return torch.sqrt(ac) * z0 + torch.sqrt(1.0 - ac) * noise
 
-    def training_step(self, batch, _):
-        x, m, x_m = batch["image"], batch["mask"], batch["masked"]  # BCHW, m in {0,1}
-        # to latent
-        z0 = self.vae.encode(x)
-        z_m = self.vae.encode(x_m)
+   def training_step(self, batch, batch_idx):
+        x, m, x_m = batch["image"], batch["mask"], batch["masked"]
+        
+        # Encode with pretrained VAE
+        with torch.no_grad():
+            z0 = self.vae.encode(x)
+            z_m = self.vae.encode(x_m)
+        
+        # Downsample mask to latent size
         m_lat = F.interpolate(m, size=z0.shape[-2:], mode="nearest")
-
-        # diffusion
-        B = z0.size(0)
-        t = torch.randint(0, self.alphas_cumprod.size(0), (B,), device=self.device)
+        
+        # Diffusion forward process
+        t = torch.randint(0, self.num_timesteps, (x.size(0),), device=self.device)
         eps = torch.randn_like(z0)
         zt = self.q_sample(z0, t, eps)
-
-        # condition
+        
+        # Conditioning
         cond = torch.cat([z_m, m_lat], dim=1)
         cond_embed = self.cond_adapter(cond)
-
-        # model predicts eps
+        
+        # Predict noise
         t_emb = timestep_embedding(t, self.device)
-        eps_hat = self.dit(torch.cat([zt, m_lat], dim=1), t_emb, cond_embed)
-
-        # emphasize masked region
+        eps_hat = self.dit(zt, t_emb, cond_embed)
+        
+        # Loss
         w = 0.7 * m_lat + 0.3
         loss = ((eps_hat - eps) ** 2 * w).mean()
-
-        self.log_dict({"train/loss": loss}, prog_bar=True)
+        self.log("train/loss", loss)
         return loss
 
     def validation_step(self, batch, _):
